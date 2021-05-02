@@ -1,0 +1,470 @@
+---
+title: "FinalProj"
+author: "Zhixue (Mary) Wang"
+date: "4/19/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(haven)
+require(tidyverse)
+require(rstanarm)
+require(magrittr)
+library(tidyverse)
+library(ggplot2)
+require(loo)
+require(bayesplot)
+require(caret)
+library(rstan)
+require(HSAUR3)
+```
+
+## Data
+
+```{r}
+sesame <- read_dta('sesame.dta') %>%
+  select(-c(rownames, agecat, encour, "_Isite_2", "_Isite_3", "_Isite_4", "_Isite_5", regular))
+```
+
+```{r}
+sesame <- sesame %>%
+  mutate(age_yr = floor(age/12),
+         pretotal = prebody + prelet + preform + prenumb + prerelat + preclasf,
+         posttotal = postbody + postlet + postform + postnumb + postrelat + postclasf,
+         diffbody = postbody - prebody,
+         difflet = postlet - prelet, 
+         diffform = postform - preform,
+         diffnumb = postnumb - prenumb, 
+         diffrelat = postrelat - prerelat, 
+         diffclasf = postclasf - preclasf,
+         difftotal = posttotal - pretotal,
+         diffbody.perc = postbody/prebody,
+         difflet.perc = (postlet+1)/(prelet+1), 
+         diffform.perc = postform/preform,
+         diffnumb.perc = postnumb/prenumb, 
+         diffrelat.perc = postrelat/prerelat, 
+         diffclasf.perc = postclasf/preclasf,
+         difftotal.perc = posttotal/pretotal,
+         adv = case_when(
+          site == 2 ~ TRUE,
+          site == 3 ~ TRUE,
+          TRUE ~ FALSE
+         ),
+         loc = case_when(
+           site == 1 ~ "inner city",
+           site == 2 ~ "suburban",
+           site == 3 ~ "rural",
+           site == 4 ~ "rural",
+           site == 3 ~ "NA",
+         ),
+         sex_cat = case_when(
+           sex == 1 ~ "M",
+           sex == 2 ~ "F",
+         ),
+         ela = (site == 5),
+         viewcat = factor(viewcat),
+         setting = factor(setting),
+         peabody_sd = (peabody - mean(peabody))/sd(peabody)
+        )
+```
+
+```{r}
+ggplot(data = sesame, aes(x = ela, y = difflet)) +
+  geom_violin()
+ggplot(data = sesame, aes(x = ela, y = diffnumb)) +
+  geom_violin()
+```
+
+```{r}
+sesame_pre <- sesame %>%
+  select(c("id", "age", "viewcat", "prebody", "prelet", "preform", "prenumb", "prerelat", "preclasf")) %>%
+  mutate(type = "pre") %>%
+  rename(
+    body = prebody,
+    let = prelet,
+    form = preform,
+    numb = prenumb,
+    relat = prerelat,
+    clasf = preclasf
+    )
+sesame_post <- sesame %>%
+  select(c("id", "age", "viewcat", "postbody", "postlet", "postform", "postnumb", "postrelat", "postclasf"))  %>%
+  mutate(type = "post") %>%
+  rename(
+    body = postbody,
+    let = postlet,
+    form = postform,
+    numb = postnumb,
+    relat = postrelat,
+    clasf = postclasf
+    )
+
+sesame_total <- rbind(sesame_pre, sesame_post) %>%
+  pivot_longer(c("body", "let", "form", "numb", "relat", "clasf"), names_to = "area", values_to = "amt") %>%
+  mutate(viewcat = factor(viewcat),
+         area = factor(area),
+         type = factor(type, c("pre", "post")))
+```
+
+if not normal, don't use z-score; maybe use median score? percentage diff in learning? mean absolute dev?
+
+```{r, fig.width = 10,fig.height = 6}
+ggplot(data = filter(sesame_total, age>=48, age <60), aes(x = viewcat, y= amt, fill=type)) +
+  geom_boxplot() + 
+  facet_grid(. ~ area)
+```
+
+```{r}
+sesame_diff <- sesame %>%
+  pivot_longer(c("diffbody.perc", "difflet.perc", "diffform.perc", "diffnumb.perc", "diffrelat.perc", "diffclasf.perc", "difftotal.perc"), names_to = "diff_area", values_to = "diff_amt.perc")
+```
+
+```{r, fig.width = 8,fig.height = 6}
+ggplot(data = filter(sesame_diff, age>=48, age <60), aes(x = viewcat, y= diff_amt.perc)) +
+  geom_boxplot() + 
+  facet_grid(ela ~ diff_area)
+```
+
+```{r}
+sesame_diff <- sesame_diff %>%
+  select(c(id, site, sex, age, age_yr,viewcat, setting, viewenc, peabody, prelet, postlet, pretotal, adv, loc, ela, difflet, diff_area, diff_amt.perc)) %>%
+  filter(age_yr == 4, diff_area=="difflet.perc") %>%
+  select(-c(diff_area, age_yr))
+
+#may remove viewenc bc viewcat
+```
+
+### Using Perc Change 
+
+```{r}
+ggplot(data = sesame_diff, aes(x = viewcat, y= diff_amt.perc)) +
+  geom_boxplot()
+ggplot(data = sesame_diff, aes(x = sex, y= diff_amt.perc)) +
+  geom_boxplot()
+ggplot(data = sesame_diff, aes(x = age, y= diff_amt.perc)) +
+  geom_point()
+ggplot(data = sesame_diff, aes(x = prelet, y= diff_amt.perc)) +
+  geom_point() #!!!
+ggplot(data = sesame_diff, aes(x = pretotal, y= diff_amt.perc)) +
+  geom_point() 
+ggplot(data = sesame_diff, aes(x = adv, y= diff_amt.perc)) +
+  geom_boxplot()
+ggplot(data = sesame_diff, aes(x = loc, y= diff_amt.perc)) +
+  geom_boxplot()
+ggplot(data = sesame_diff, aes(x = ela, y= diff_amt.perc)) +
+  geom_boxplot()
+ggplot(data = sesame_diff, aes(x = peabody, y= diff_amt.perc)) +  #no corr for pre or post scores...
+  geom_point() 
+ggplot(data = sesame_diff, aes(x = ela, y= peabody)) +  #counterintuitive
+  geom_boxplot() 
+ggplot(data = sesame_diff, aes(x = setting, y= peabody)) +
+  geom_boxplot() 
+```
+
+```{r}
+ggplot(data = sesame_diff, aes(x = prelet, y= diff_amt.perc, color = sex)) +
+  geom_point() +
+  geom_smooth(method=lm, se=FALSE)
+ggplot(data = sesame_diff, aes(x = age, y= diff_amt.perc, color = sex)) +
+  geom_point() +
+  geom_smooth(method=lm, se=FALSE)
+ggplot(data = sesame_diff, aes(x = age, y= diff_amt.perc, color = viewcat)) +
+  #neg slope for viewcat 4 - learning caps?
+  geom_point() +
+  geom_smooth(method=lm, se=FALSE)
+ggplot(data = sesame_diff, aes(x = viewcat, y= diff_amt.perc, color = sex)) +
+  geom_boxplot() 
+ggplot(data = sesame_diff, aes(x = viewcat, y= diff_amt.perc, color = setting)) +
+  geom_boxplot() 
+ggplot(data = sesame_diff, aes(x = viewcat, y= diff_amt.perc, color = adv)) +
+  geom_boxplot() 
+ggplot(data = sesame_diff, aes(x = viewcat, y= diff_amt.perc, color = loc)) +
+  geom_boxplot() 
+ggplot(data = sesame_diff, aes(x = viewcat, y= diff_amt.perc, color = as.factor(site))) +
+  geom_boxplot() 
+ggplot(data = sesame_diff, aes(x = viewcat, y= diff_amt.perc, color = ela)) +
+  geom_boxplot() 
+ggplot(data = sesame_diff, aes(x = viewcat, y= diff_amt.perc, color = as.factor(viewenc))) +
+  geom_boxplot() 
+```
+
+```{r}
+ggplot(data = sesame_diff, aes(x = peabody, y= diff_amt.perc, color = sex)) + 
+  geom_point()  +
+  geom_smooth(method=lm, se=FALSE)
+ggplot(data = sesame_diff, aes(x = peabody, y= diff_amt.perc, color = viewcat)) + 
+  geom_point()  +
+  geom_smooth(method=lm, se=FALSE)
+ggplot(data = sesame_diff, aes(x = peabody, y= diff_amt.perc, color = ela)) + 
+  geom_point()  +
+  geom_smooth(method=lm, se=FALSE)
+```
+
+```{r}
+#bc of cap in improvement...
+ggplot(data = sesame_diff, aes(x = prelet, y= diff_amt.perc, color=viewcat)) +
+  geom_point()  +
+  geom_smooth(method=lm, se=FALSE) +
+  geom_vline(xintercept=0) +
+  geom_vline(xintercept=58)
+ggplot(data = sesame_diff, aes(x = prelet, y= diff_amt.perc, color=loc)) +
+  geom_point()  +
+  geom_smooth(method=lm, se=FALSE) +
+  geom_vline(xintercept=0) +
+  geom_vline(xintercept=58)
+```
+
+### Using Post Score
+
+```{r}
+ggplot(data = sesame_diff, aes(x = viewcat, y= postlet)) +
+  geom_boxplot()
+ggplot(data = sesame_diff, aes(x = sex, y= postlet)) +
+  geom_boxplot()
+ggplot(data = sesame_diff, aes(x = age, y= postlet)) +
+  geom_point()
+ggplot(data = sesame_diff, aes(x = prelet, y= postlet)) +
+  geom_point() #!!!
+ggplot(data = sesame_diff, aes(x = pretotal, y= postlet)) +
+  geom_point() 
+ggplot(data = sesame_diff, aes(x = adv, y= postlet)) +
+  geom_boxplot()
+ggplot(data = sesame_diff, aes(x = loc, y= postlet)) +
+  geom_boxplot()
+ggplot(data = sesame_diff, aes(x = ela, y= postlet)) +
+  geom_boxplot()
+ggplot(data = sesame_diff, aes(x = peabody, y= postlet)) +  
+  geom_point() 
+```
+
+```{r}
+ggplot(data = sesame_diff, aes(x = prelet, y= postlet, color = sex)) +
+  geom_point() +
+  geom_smooth(method=lm, se=FALSE)
+ggplot(data = sesame_diff, aes(x = age, y= postlet, color = sex)) +
+  geom_point() +
+  geom_smooth(method=lm, se=FALSE)
+ggplot(data = sesame_diff, aes(x = age, y= postlet, color = viewcat)) +
+  geom_point() +
+  geom_smooth(method=lm, se=FALSE)
+ggplot(data = sesame_diff, aes(x = viewcat, y= postlet, color = sex)) +
+  geom_boxplot() 
+ggplot(data = sesame_diff, aes(x = viewcat, y= postlet, color = setting)) +
+  geom_boxplot() 
+ggplot(data = sesame_diff, aes(x = viewcat, y= postlet, color = adv)) +
+  geom_boxplot() 
+ggplot(data = sesame_diff, aes(x = viewcat, y= postlet, color = loc)) +
+  geom_boxplot() 
+ggplot(data = sesame_diff, aes(x = viewcat, y= postlet, color = ela)) +
+  geom_boxplot() 
+```
+
+```{r}
+ggplot(data = sesame_diff, aes(x = peabody, y= postlet, color = sex)) + 
+  geom_point()  +
+  geom_smooth(method=lm, se=FALSE)
+ggplot(data = sesame_diff, aes(x = peabody, y= postlet, color = viewcat)) + 
+  geom_point()  +
+  geom_smooth(method=lm, se=FALSE)
+ggplot(data = sesame_diff, aes(x = peabody, y= postlet, color = ela)) + 
+  geom_point()  +
+  geom_smooth(method=lm, se=FALSE)
+```
+
+```{r}
+ggplot(data = sesame_diff, aes(x = prelet, y= postlet, color=viewcat)) +
+  geom_point()  +
+  geom_smooth(method=lm, se=FALSE) +
+  geom_vline(xintercept=0) +
+  geom_vline(xintercept=58)
+ggplot(data = sesame_diff, aes(x = prelet, y= postlet, color=loc)) +
+  geom_point()  +
+  geom_smooth(method=lm, se=FALSE) +
+  geom_vline(xintercept=0) +
+  geom_vline(xintercept=58)
+ggplot(data = sesame_diff, aes(x = prelet, y= postlet, color=adv)) +
+  geom_point()  +
+  geom_smooth(method=lm, se=FALSE) +
+  geom_vline(xintercept=0) +
+  geom_vline(xintercept=58)
+```
+
+### Looking at students who did worse
+
+```{r}
+sesame_min <- sesame %>%
+  mutate(dec = case_when(
+    postlet < prelet ~ TRUE,
+    TRUE ~ FALSE
+  ),
+  dec_int = case_when(
+    postlet < prelet ~ 1,
+    TRUE ~ 0
+  ))
+```
+
+```{r}
+ggplot(data = sesame_min, aes(x = viewcat, fill= dec)) +
+  geom_bar(position="fill")
+ggplot(data = sesame_min, aes(x = sex, fill= dec)) +
+  geom_bar(position="fill")
+ggplot(data = sesame_min, aes(x = age)) +
+  geom_histogram() +
+  facet_grid(dec ~ .)
+ggplot(data = sesame_min, aes(x = prelet)) +
+  geom_histogram() +
+  facet_grid(dec ~ .)
+ggplot(data = sesame_min, aes(x = pretotal)) +
+  geom_histogram() +
+  facet_grid(dec ~ .)
+ggplot(data = sesame_min, aes(x = adv, fill= dec)) +
+  geom_bar(position="fill")
+ggplot(data = sesame_min, aes(x = loc, fill= dec)) +
+  geom_bar(position="fill")
+ggplot(data = sesame_min, aes(x = ela, fill= dec)) +
+  geom_bar(position="fill")
+ggplot(data = sesame_min, aes(x = peabody)) +
+  geom_histogram() +
+  facet_grid(dec ~ .)
+ggplot(data = sesame_min, aes(x = postlet)) +
+  geom_histogram() +
+  facet_grid(dec ~ .)
+```
+
+```{r}
+sesame_model <- sesame %>%
+  select(difflet.perc, difflet, postlet, prelet, site, sex, viewcat, setting, viewenc, peabody,peabody_sd,adv, ela, age_yr) %>%
+  mutate(male = case_when(
+    sex == 1 ~ 1,
+    TRUE ~ 0
+    ),
+    viewcat = as.numeric(viewcat),
+    home = case_when(
+      setting == 1 ~ 1,
+      TRUE ~ 0
+    ),
+    enc = case_when(
+      viewenc == 1 ~ 1,
+      TRUE ~ 0
+    ),
+    adv = as.numeric(adv),
+    ela = as.numeric(ela),
+    view1 = case_when(
+      viewcat == 1 ~ 1,
+      TRUE ~ 0,
+    ),
+    view2 = case_when(
+      viewcat == 2 ~ 1,
+      TRUE ~ 0,
+    ),
+    view3 = case_when(
+      viewcat == 3 ~ 1,
+      TRUE ~ 0,
+    ),
+    view4 = case_when(
+      viewcat == 4 ~ 1,
+      TRUE ~ 0,
+    ),
+    site1 = case_when(
+      site == 1 ~ 1,
+      TRUE ~ 0,
+    ),
+    site2 = case_when(
+      site == 2 ~ 1,
+      TRUE ~ 0,
+    ),
+    site3 = case_when(
+      site == 3 ~ 1,
+      TRUE ~ 0,
+    ),
+    site4 = case_when(
+      site == 4 ~ 1,
+      TRUE ~ 0,
+    ),
+    site5 = case_when(
+      site == 5 ~ 1,
+      TRUE ~ 0,
+    ),
+    postlet = as.integer(postlet),
+    dec_int = case_when(
+      postlet < prelet ~ 1,
+      TRUE ~ 0
+    )
+  ) %>%
+  select(-c(site,viewenc, setting, sex))
+```
+
+```{R}
+stan.glm <- stan_glm(data = sesame_model, 
+                   formula = difflet.perc ~ viewcat + age_yr +peabody_sd + male + home + enc + site1 + site3 + site4 + site5 + viewcat*(male + home + enc), 
+                   family = Gamma(link="log"),
+                   prior = normal(0, 1),
+                   prior_intercept = normal(0, 1),
+                   prior_aux = exponential(3))
+```
+
+```{r}
+summary(stan.glm)
+```
+
+```{r}
+print(stan.glm$stanfit)
+```
+
+```{r}
+#, pars = vars(-shape)
+mcmc_areas(as.matrix(stan.glm), pars = vars(-shape), prob = 0.95, prob_outer = 1)
+exp(coef(stan.glm))
+loo(stan.glm, save_psis = TRUE)
+```
+
+```{R}
+stan.glm.dec <- stan_glm(data = sesame_model, 
+                   formula = dec_int ~ viewcat + age_yr +peabody_sd + male + home + enc + site1 + site3 + site4 + site5 + viewcat*(male + home + enc), 
+                   family = binomial,
+                   prior = normal(0, 1),
+                   prior_intercept = normal(0, 1))
+```
+```{r}
+print(stan.glm.dec$stanfit)
+```
+
+```{r}
+mcmc_areas(as.matrix(stan.glm.dec), prob = 0.95, prob_outer = 1)
+exp(coef(stan.glm.dec))
+loo(stan.glm.dec, save_psis = TRUE)
+```
+
+```{r}
+#confuse - use shinystan output
+#posterior checks
+overlap = rbind(data.frame(y = log(sesame_model$difflet.perc), distr = 'actual'), data.frame(y = stan.glm$fitted.values, distr = 'predicted'))
+ggplot(overlap, aes(x = y, fill = distr)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Percentage Change")
+
+overlap = rbind(data.frame(y = sesame_model$difflet.perc, Distribution = 'actual'), data.frame(y = rgamma(240, shape=5, rate = 5/stan.glm$fitted.values), Distribution = 'predicted'))
+ggplot(overlap, aes(x = y, fill = Distribution)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Percentage Change", y = "Density")
+
+(misclas <- sum(sesame_model$dec_int != floor(stan.glm.dec$fitted.values+0.5))/nrow(sesame_model))
+(false_pos <- sum(sesame_model$dec_int < floor(stan.glm.dec$fitted.values+0.5))/nrow(sesame_model))
+(false_neg <- sum(sesame_model$dec_int > floor(stan.glm.dec$fitted.values+0.5))/nrow(sesame_model))
+(true_pos <- sum((sesame_model$dec_int == 1) * (stan.glm.dec$fitted.values>=0.5))/nrow(sesame_model))
+(true_neg <- sum((sesame_model$dec_int == 0) * (stan.glm.dec$fitted.values<0.5))/nrow(sesame_model))
+```
+
+```{r}
+#mixing checks
+plot(stan.glm, "acf")
+plot(stan.glm, "trace")
+plot(stan.glm.dec, "acf")
+plot(stan.glm.dec, "trace")
+```
+
